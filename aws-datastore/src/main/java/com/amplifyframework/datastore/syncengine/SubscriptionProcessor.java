@@ -67,8 +67,8 @@ import io.reactivex.rxjava3.subjects.ReplaySubject;
  */
 final class SubscriptionProcessor {
     private static final Logger LOG = Amplify.Logging.forNamespace("amplify:aws-datastore");
-    private static final long TIMEOUT_SECONDS_PER_MODEL = 20;
-    private static final long NETWORK_OP_TIMEOUT_SECONDS = 60;
+    private static final int DEFAULT_MAX_AGE_IN_MINUTES = 10;
+    private static final int DEFAULT_MAX_TOTAL_SUBSCRIPTIONS = 100;
 
     private final AppSync appSync;
     private final ModelProvider modelProvider;
@@ -77,7 +77,6 @@ final class SubscriptionProcessor {
     private final QueryPredicateProvider queryPredicateProvider;
     private final Consumer<Throwable> onFailure;
     private final CompositeDisposable ongoingOperationsDisposable;
-    private final long adjustedTimeoutSeconds;
     private ReplaySubject<SubscriptionEvent<? extends Model>> buffer;
 
     /**
@@ -93,16 +92,6 @@ final class SubscriptionProcessor {
         this.schemaRegistry = builder.schemaRegistry;
 
         this.ongoingOperationsDisposable = new CompositeDisposable();
-
-        // Operation times out after 60 seconds. If there are more than 5 models,
-        // then 20 seconds are added to the timer per additional model count.
-        this.adjustedTimeoutSeconds = Math.max(
-            NETWORK_OP_TIMEOUT_SECONDS,
-            TIMEOUT_SECONDS_PER_MODEL * Math.max(
-                    modelProvider.models().size(),
-                    modelProvider.modelSchemas().size()
-            )
-        );
     }
 
     /**
@@ -114,17 +103,28 @@ final class SubscriptionProcessor {
     }
 
     /**
-     * Start subscribing to model mutations.
+     * Start subscribing to model mutations with NonAbortingCountDownLatch.
+     * @throws DataStoreException if dataStoreConfigurationProvider.getConfiguration() fails
      */
     synchronized void startSubscriptions() throws DataStoreException {
         int subscriptionCount = modelProvider.modelNames().size() * SubscriptionType.values().length;
         // Create a latch with the number of subscriptions are requesting. Each of these will be
         // counted down when each subscription's onStarted event is called.
-        AbortableCountDownLatch<DataStoreException> latch = new AbortableCountDownLatch<>(subscriptionCount);
+        NonAbortingCountDownLatch<DataStoreException> latch = new NonAbortingCountDownLatch<>(subscriptionCount);
+        startSubscriptions(latch);
+    }
 
+    /**
+     * Start subscribing to model mutations.
+     * @param latch A latch to count down when subscriptions onStarted event is called
+     */
+    synchronized void startSubscriptions(AbortableCountDownLatch<DataStoreException> latch) throws DataStoreException {
         // Need to create a new buffer so we can properly handle retries and stop/start scenarios.
         // Re-using the same buffer has some unexpected results due to the replay aspect of the subject.
-        buffer = ReplaySubject.create();
+        // We allow mutations to reside for 10 minutes and collect a maximum of 100 for predicable
+        // memory usage.
+        buffer = ReplaySubject.createWithTimeAndSize(
+            DEFAULT_MAX_AGE_IN_MINUTES, TimeUnit.MINUTES, Schedulers.io(), DEFAULT_MAX_TOTAL_SUBSCRIPTIONS);
 
         Set<Observable<SubscriptionEvent<? extends Model>>> subscriptions = new HashSet<>();
         for (ModelSchema modelSchema : modelProvider.modelSchemas().values()) {
@@ -145,7 +145,7 @@ final class SubscriptionProcessor {
         boolean subscriptionsStarted;
         try {
             LOG.debug("Waiting for subscriptions to start.");
-            subscriptionsStarted = latch.abortableAwait(adjustedTimeoutSeconds, TimeUnit.SECONDS);
+            subscriptionsStarted = latch.abortableAwait();
         } catch (InterruptedException exception) {
             LOG.warn("Subscription operations were interrupted during setup.");
             return;
