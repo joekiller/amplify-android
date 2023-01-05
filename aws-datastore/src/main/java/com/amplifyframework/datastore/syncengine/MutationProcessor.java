@@ -25,6 +25,7 @@ import com.amplifyframework.core.model.Model;
 import com.amplifyframework.core.model.ModelSchema;
 import com.amplifyframework.core.model.SchemaRegistry;
 import com.amplifyframework.core.model.SerializedModel;
+import com.amplifyframework.datastore.DataStoreConfigurationProvider;
 import com.amplifyframework.datastore.DataStoreException;
 import com.amplifyframework.datastore.appsync.AppSync;
 import com.amplifyframework.datastore.appsync.AppSyncConflictUnhandledError;
@@ -37,6 +38,7 @@ import com.amplifyframework.logging.Logger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 
 import io.reactivex.rxjava3.core.Completable;
 import io.reactivex.rxjava3.core.Single;
@@ -59,6 +61,8 @@ final class MutationProcessor {
     private final ConflictResolver conflictResolver;
     private final CompositeDisposable ongoingOperationsDisposable;
     private final RetryHandler retryHandler;
+    private final CompositeDisposable ongoingRestartDisposable;
+    private final DataStoreConfigurationProvider dataStoreConfigurationProvider;
 
     private MutationProcessor(Builder builder) {
         this.merger = Objects.requireNonNull(builder.merger);
@@ -69,6 +73,8 @@ final class MutationProcessor {
         this.conflictResolver = Objects.requireNonNull(builder.conflictResolver);
         this.retryHandler = Objects.requireNonNull(builder.retryHandler);
         this.ongoingOperationsDisposable = new CompositeDisposable();
+        this.ongoingRestartDisposable = new CompositeDisposable();
+        this.dataStoreConfigurationProvider = Objects.requireNonNull(builder.dataStoreConfigurationProvider);
     }
 
     /**
@@ -103,7 +109,17 @@ final class MutationProcessor {
             .flatMapCompletable(event -> drainMutationOutbox())
             .subscribe(
                 () -> LOG.warn("Observation of mutation outbox was completed."),
-                error -> LOG.warn("Error ended observation of mutation outbox: ", error)
+                error -> {
+                    LOG.warn("Error ended observation of mutation outbox, attempting restart.", error);
+                    ongoingRestartDisposable.add(Completable.timer(dataStoreConfigurationProvider
+                                .getConfiguration().getOutboxMutationErrorRestartDelay(),
+                            TimeUnit.SECONDS)
+                        .andThen(Completable.fromAction(this::startDrainingMutationOutbox))
+                        .subscribe(
+                            () -> LOG.warn("Restart of mutation outbox was completed."),
+                            re -> LOG.warn("Error ended restart of mutation outbox.", re)
+                        ));
+                }
             )
         );
     }
@@ -116,13 +132,18 @@ final class MutationProcessor {
                 return Completable.complete();
             }
             try {
-                processOutboxItem(next)
-                    .blockingAwait();
+                processOutboxItem(next).blockingAwait();
             } catch (RuntimeException error) {
                 return Completable.error(new DataStoreException(
-                        "Failed to process " + error, "Check your internet connection."
+                        "Failed to process " + next, error, "Check your internet connection."
                 ));
             }
+            next = mutationOutbox.peek();
+            if (next == null) {
+                mutationOutbox.load().blockingAwait();
+            }
+            // publish status after we have loaded any more pending
+            publishCurrentOutboxStatus();
         } while (true);
     }
 
@@ -155,7 +176,6 @@ final class MutationProcessor {
                     "Pending mutation was published to cloud successfully, " +
                         "and removed from the mutation outbox: " + mutationOutboxItem
                 );
-                publishCurrentOutboxStatus();
             })
             // If caused by an AppSync error, then publish it to hub, swallow,
             // and then remove from the outbox to unblock the queue.
@@ -244,6 +264,7 @@ final class MutationProcessor {
     void stopDrainingMutationOutbox() {
         // Calling clear on ongoingOperationsDisposable triggers dispose method
         // to anything that was added to ongoingOperationsDisposable
+        ongoingRestartDisposable.clear();
         ongoingOperationsDisposable.clear();
     }
 
@@ -401,6 +422,7 @@ final class MutationProcessor {
             BuilderSteps.AppSyncStep,
             BuilderSteps.ConflictResolverStep,
             BuilderSteps.RetryHandlerStep,
+            BuilderSteps.DataStoreConfigurationProviderStep,
             BuilderSteps.BuildStep {
         private Merger merger;
         private VersionRepository versionRepository;
@@ -409,6 +431,7 @@ final class MutationProcessor {
         private AppSync appSync;
         private ConflictResolver conflictResolver;
         private RetryHandler retryHandler;
+        private DataStoreConfigurationProvider dataStoreConfigurationProvider;
 
         @NonNull
         @Override
@@ -454,8 +477,16 @@ final class MutationProcessor {
 
         @NonNull
         @Override
-        public BuilderSteps.BuildStep retryHandler(@NonNull RetryHandler retryHandler) {
+        public BuilderSteps.DataStoreConfigurationProviderStep retryHandler(@NonNull RetryHandler retryHandler) {
             this.retryHandler = retryHandler;
+            return Builder.this;
+        }
+
+        @NonNull
+        @Override
+        public BuilderSteps.BuildStep dataStoreConfigurationProvider(
+                @NonNull DataStoreConfigurationProvider dataStoreConfigurationProvider) {
+            this.dataStoreConfigurationProvider = Objects.requireNonNull(dataStoreConfigurationProvider);
             return Builder.this;
         }
 
@@ -499,7 +530,13 @@ final class MutationProcessor {
 
         interface RetryHandlerStep {
             @NonNull
-            BuildStep retryHandler(@NonNull RetryHandler retryHandler);
+            DataStoreConfigurationProviderStep retryHandler(@NonNull RetryHandler retryHandler);
+        }
+
+        interface DataStoreConfigurationProviderStep {
+            @NonNull
+            BuildStep dataStoreConfigurationProvider(
+                DataStoreConfigurationProvider dataStoreConfiguration);
         }
 
         interface BuildStep {

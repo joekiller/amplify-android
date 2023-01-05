@@ -136,7 +136,9 @@ public final class SubscriptionProcessorTest {
 
         // Act: start some subscriptions.
         try {
-            subscriptionProcessor.startSubscriptions();
+            subscriptionProcessor.startSubscriptions(
+                    new TimedAbortableCountDownLatch<>(this.modelSchemas.size(),
+                    OPERATION_TIMEOUT_MS, TimeUnit.MILLISECONDS));
         } catch (DataStoreException exception) {
             // startSubscriptions throws this exception if it doesn't receive the start_ack messages after a time out.
             // This test doesn't mock those start_ack messages, so this expection is expected.  That's okay though -

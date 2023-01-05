@@ -47,6 +47,7 @@ public final class DataStoreConfiguration {
     static final boolean DEFAULT_DO_SYNC_RETRY = false;
     static final int MAX_RECORDS = 1000;
     static final long MAX_TIME_SEC = 2;
+    static final int DEFAULT_OUTBOX_ERROR_RESTART_DELAY = 30;
 
     private final DataStoreErrorHandler errorHandler;
     private final DataStoreConflictHandler conflictHandler;
@@ -57,6 +58,7 @@ public final class DataStoreConfiguration {
     private final Long syncIntervalInMinutes;
     private final Long maxTimeLapseForObserveQuery;
     private final Integer observeQueryMaxRecords;
+    private final Integer outboxErrorRestartDelay;
 
     private DataStoreConfiguration(Builder builder) {
         this.errorHandler = builder.errorHandler;
@@ -68,6 +70,7 @@ public final class DataStoreConfiguration {
         this.doSyncRetry = builder.doSyncRetry;
         this.maxTimeLapseForObserveQuery = builder.maxTimeLapseForObserveQuery;
         this.observeQueryMaxRecords = builder.observeQueryMaxRecords;
+        this.outboxErrorRestartDelay = builder.outboxErrorRestartDelay;
     }
 
     /**
@@ -124,6 +127,7 @@ public final class DataStoreConfiguration {
                 .doSyncRetry(DEFAULT_DO_SYNC_RETRY)
                 .observeQueryMaxTime(MAX_TIME_SEC)
                 .observeQueryMaxRecords(MAX_RECORDS)
+            .outboxErrorRestartDelay(DEFAULT_OUTBOX_ERROR_RESTART_DELAY)
             .build();
     }
 
@@ -206,6 +210,15 @@ public final class DataStoreConfiguration {
         return this.syncExpressions;
     }
 
+    /**
+     * Returns the interval in seconds to delay for outbox mutations.
+     * @return interval in seconds to wait before resuming outbox mutations.
+     */
+    @IntRange(from = 0)
+    public Integer getOutboxMutationErrorRestartDelay() {
+        return this.outboxErrorRestartDelay;
+    }
+
     @Override
     public boolean equals(@Nullable Object thatObject) {
         if (this == thatObject) {
@@ -242,6 +255,9 @@ public final class DataStoreConfiguration {
         if (!ObjectsCompat.equals(getObserveQueryMaxRecords(), that.getObserveQueryMaxRecords())) {
             return false;
         }
+        if (!ObjectsCompat.equals(getOutboxMutationErrorRestartDelay(), that.getOutboxMutationErrorRestartDelay())) {
+            return false;
+        }
         return true;
     }
 
@@ -256,6 +272,7 @@ public final class DataStoreConfiguration {
         result = 31 * result + getDoSyncRetry().hashCode();
         result = 31 * result + (getObserveQueryMaxRecords() != null ? getObserveQueryMaxRecords().hashCode() : 0);
         result = 31 * result + getMaxTimeLapseForObserveQuery().hashCode();
+        result = 31 * result + getOutboxMutationErrorRestartDelay().hashCode();
         return result;
     }
 
@@ -271,6 +288,7 @@ public final class DataStoreConfiguration {
                 ", doSyncRetry=" + doSyncRetry +
                 ", maxTimeRelapseForObserveQuery=" + maxTimeLapseForObserveQuery +
                 ", observeQueryMaxRecords=" + observeQueryMaxRecords +
+            ", outboxErrorRestartDelay=" + outboxErrorRestartDelay +
             '}';
     }
 
@@ -310,6 +328,7 @@ public final class DataStoreConfiguration {
         private DataStoreConfiguration userProvidedConfiguration;
         private Integer observeQueryMaxRecords;
         private long maxTimeLapseForObserveQuery;
+        private Integer outboxErrorRestartDelay;
 
         private Builder() {
             this.errorHandler = DefaultDataStoreErrorHandler.instance();
@@ -394,6 +413,17 @@ public final class DataStoreConfiguration {
         @NonNull
         public Builder syncMaxRecords(@IntRange(from = 0) Integer syncMaxRecords) {
             this.syncMaxRecords = syncMaxRecords;
+            return Builder.this;
+        }
+
+        /**
+         * Sets the delay for outbound record sync restart.
+         * @param outboxErrorRestartDelay maximum number of seconds to delay
+         * @return Current builder instance
+         */
+        @NonNull
+        public Builder outboxErrorRestartDelay(@IntRange(from = 0) Integer outboxErrorRestartDelay) {
+            this.outboxErrorRestartDelay = outboxErrorRestartDelay;
             return Builder.this;
         }
 
@@ -483,6 +513,10 @@ public final class DataStoreConfiguration {
                         case SYNC_PAGE_SIZE:
                             this.syncPageSize(pluginJson.getInt(ConfigKey.SYNC_PAGE_SIZE.toString()));
                             break;
+                        case OUTBOX_ERROR_RESTART_DELAY:
+                            this.outboxErrorRestartDelay(
+                                pluginJson.getInt(ConfigKey.OUTBOX_ERROR_RESTART_DELAY.toString()));
+                            break;
                         default:
                             throw new IllegalArgumentException("Unsupported config key = " + configKey.toString());
                     }
@@ -512,6 +546,8 @@ public final class DataStoreConfiguration {
                     observeQueryMaxRecords);
             maxTimeLapseForObserveQuery = userProvidedConfiguration.getMaxTimeLapseForObserveQuery()
                     == 0 ? maxTimeLapseForObserveQuery : userProvidedConfiguration.getMaxTimeLapseForObserveQuery();
+            outboxErrorRestartDelay = getValueOrDefault(userProvidedConfiguration.getOutboxMutationErrorRestartDelay(),
+                outboxErrorRestartDelay);
         }
 
         private static <T> T getValueOrDefault(T value, T defaultValue) {
@@ -541,6 +577,8 @@ public final class DataStoreConfiguration {
                 observeQueryMaxRecords = getValueOrDefault(observeQueryMaxRecords, MAX_RECORDS);
                 maxTimeLapseForObserveQuery = maxTimeLapseForObserveQuery == 0 ? MAX_TIME_SEC :
                         maxTimeLapseForObserveQuery;
+                outboxErrorRestartDelay = getValueOrDefault(outboxErrorRestartDelay,
+                    DEFAULT_OUTBOX_ERROR_RESTART_DELAY);
             }
             return new DataStoreConfiguration(this);
         }
@@ -560,7 +598,11 @@ public final class DataStoreConfiguration {
          * Number of records that the client wants to process, while it is requesting
          * a base/delta sync operation from AppSync.
          */
-        SYNC_MAX_RECORDS("syncMaxRecords");
+        SYNC_MAX_RECORDS("syncMaxRecords"),
+        /**
+         * Number of seconds to delay restart of outbox in error.
+         */
+        OUTBOX_ERROR_RESTART_DELAY("outboxErrorRestartDelay");
 
         private final String key;
 

@@ -110,6 +110,7 @@ public final class MutationProcessorTest {
                 .appSync(appSync)
                 .conflictResolver(conflictResolver)
                 .retryHandler(retryHandler)
+                .dataStoreConfigurationProvider(configurationProvider)
                 .build();
     }
 

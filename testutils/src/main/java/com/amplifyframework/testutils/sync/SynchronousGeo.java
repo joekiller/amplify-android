@@ -40,7 +40,6 @@ import java.util.Objects;
  * performing various operations.
  */
 public final class SynchronousGeo {
-    private static final int TIMEOUT = 20 * 1000;
     private final GeoCategoryBehavior asyncDelegate;
 
     private SynchronousGeo(GeoCategoryBehavior asyncDelegate) {
@@ -77,7 +76,7 @@ public final class SynchronousGeo {
      * @throws GeoException if maps are not configured.
      */
     public Collection<MapStyle> getAvailableMaps() throws GeoException {
-        return Await.result(TIMEOUT, asyncDelegate::getAvailableMaps);
+        return Await.result(asyncDelegate::getAvailableMaps);
     }
 
     /**
@@ -87,7 +86,7 @@ public final class SynchronousGeo {
      * @throws GeoException if default map is not configured.
      */
     public MapStyle getDefaultMap() throws GeoException {
-        return Await.result(TIMEOUT, asyncDelegate::getDefaultMap);
+        return Await.result(asyncDelegate::getDefaultMap);
     }
 
     /**
@@ -100,7 +99,7 @@ public final class SynchronousGeo {
     public MapStyleDescriptor getMapStyleDescriptor(
             GetMapStyleDescriptorOptions options
     ) throws GeoException {
-        return Await.<MapStyleDescriptor, GeoException>result(TIMEOUT, (onResult, onError) ->
+        return Await.<MapStyleDescriptor, GeoException>result((onResult, onError) ->
                 asyncDelegate.getMapStyleDescriptor(options, onResult, onError));
     }
 
@@ -116,7 +115,7 @@ public final class SynchronousGeo {
             String query,
             GeoSearchByTextOptions options
     ) throws GeoException {
-        return Await.<GeoSearchResult, GeoException>result(TIMEOUT, (onResult, onError) ->
+        return Await.<GeoSearchResult, GeoException>result((onResult, onError) ->
                 asyncDelegate.searchByText(query, options, onResult, onError));
     }
 
@@ -132,7 +131,7 @@ public final class SynchronousGeo {
             Coordinates coordinates,
             GeoSearchByCoordinatesOptions options
     ) throws GeoException {
-        return Await.<GeoSearchResult, GeoException>result(TIMEOUT, (onResult, onError) ->
+        return Await.<GeoSearchResult, GeoException>result((onResult, onError) ->
                 asyncDelegate.searchByCoordinates(coordinates, options, onResult, onError));
     }
 }
